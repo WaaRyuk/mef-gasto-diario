@@ -1,1 +1,44 @@
 
+name: Resumen diario MEF
+permissions:
+  contents: write
+on:
+  schedule:
+    # El MEF no publica a una hora fija (se ha visto entre ~9am y ~2pm hora Perú),
+    # así que corremos varias veces en esa ventana para no depender de adivinar la hora exacta.
+    - cron: '7 14 * * *'   # 14:07 UTC = 9:07am hora Perú
+    - cron: '7 16 * * *'   # 16:07 UTC = 11:07am hora Perú
+    - cron: '7 18 * * *'   # 18:07 UTC = 1:07pm hora Perú
+    - cron: '7 20 * * *'   # 20:07 UTC = 3:07pm hora Perú
+  workflow_dispatch:        # te permite además correrlo manualmente cuando quieras
+jobs:
+  ejecutar-resumen:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      - name: Ejecutar script (MINEM + Economia y Finanzas, una sola lectura del CSV)
+        run: python scripts/resumen_combinado.py
+      - name: Guardar resultados como artefactos
+        uses: actions/upload-artifact@v4
+        with:
+          name: resumenes-mef
+          path: |
+            energia_minas_resumen.csv
+            economia_finanzas_resumen.csv
+      - name: Guardar resultados en el repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          mkdir -p output
+          cp energia_minas_resumen.csv output/energia_minas_resumen.csv
+          cp economia_finanzas_resumen.csv output/economia_finanzas_resumen.csv
+          git add output/energia_minas_resumen.csv output/economia_finanzas_resumen.csv
+          git commit -m "Actualiza resumenes diarios" || echo "Sin cambios"
+          git push
