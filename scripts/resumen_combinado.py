@@ -1,4 +1,3 @@
-
 import duckdb
 import requests
 from datetime import timezone, timedelta
@@ -115,8 +114,10 @@ resultado_ecofin = con.execute(f"""
                 WHEN 1 THEN 'Ene' WHEN 2 THEN 'Feb' WHEN 3 THEN 'Mar' WHEN 4 THEN 'Abr'
                 WHEN 5 THEN 'May' WHEN 6 THEN 'Jun' WHEN 7 THEN 'Jul' WHEN 8 THEN 'Ago'
                 WHEN 9 THEN 'Set' WHEN 10 THEN 'Oct' WHEN 11 THEN 'Nov' WHEN 12 THEN 'Dic'
-                ELSE 'Error' END AS MES,
-            MAKE_DATE(ANO_EJE, MES_EJE, 1) AS FECHA,
+                ELSE 'Sin mes' END AS MES,
+            CASE WHEN MES_EJE BETWEEN 1 AND 12
+                 THEN MAKE_DATE(ANO_EJE, MES_EJE, 1)
+                 ELSE NULL END AS FECHA,
             MONTO_PIA, MONTO_PIM, MONTO_CERTIFICADO, MONTO_COMPROMETIDO_ANUAL, MONTO_COMPROMETIDO,
             MONTO_DEVENGADO, MONTO_GIRADO
         FROM base
