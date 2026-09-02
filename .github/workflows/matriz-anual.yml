@@ -40,4 +40,5 @@ jobs:
           cp ejecucion_*.csv output/
           git add output/ejecucion_*.csv
           git commit -m "Actualiza ejecucion MATRIZ anio actual" || echo "Sin cambios"
+          git pull --rebase origin main
           git push
