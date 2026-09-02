@@ -8,17 +8,25 @@ Logica de cruce:
     cruzada contra PRODUCTO_PROYECTO. La columna ACTIVIDAD ya NO se usa
     para buscar.
 
-Los datos vienen a nivel mensual en el CSV original; aqui se agrupan
-quitando MES_EJE para no repetir filas por cada mes:
-  - MONTO_DEVENGADO: se SUMA entre los meses del anio (es incremental).
-  - MONTO_PIM: se toma el MAXIMO del anio (es el presupuesto asignado,
-    se repite igual en cada fila mensual, sumarlo lo multiplicaria).
+Sobre la agregacion de montos (IMPORTANTE):
+  El CSV trae, para cada "linea presupuestal" (una combinacion especifica
+  de SEC_FUNC, fuente de financiamiento, clasificador de gasto, etc.), una
+  fila por mes. El PIM se repite igual en cada una de esas 12 filas
+  mensuales, pero puede haber VARIAS lineas distintas bajo la misma
+  Actividad/Proyecto (por ejemplo, si hubo una modificacion presupuestal
+  que agrego una fuente de financiamiento nueva). Por eso la agregacion
+  se hace en dos pasos:
+    1) Se colapsan los 12 meses de CADA linea individual: se toma el PIM
+       de esa linea con MAX (no cambia entre meses) y se SUMA su
+       devengado mensual.
+    2) Recien ahi se suman todas las lineas para llegar al nivel de
+       Actividad/Proyecto/Departamento que pediste. Asi el PIM incluye
+       las modificaciones (lineas nuevas) sin duplicarse por mes.
 
 Como este periodo ya cerro (no cambia), este script se corre UNA sola vez.
 Para el año en curso usar extraer_ejecucion_anio_actual.py.
 """
 
-import re
 import duckdb
 import pandas as pd
 
@@ -45,6 +53,13 @@ COLUMNAS_DIM = [
     "DEPARTAMENTO_META", "DEPARTAMENTO_META_NOMBRE",
 ]
 
+# Columnas monetarias del CSV origen que se descartan de la clave de
+# deduplicacion por linea (junto con MES_EJE)
+COLUMNAS_MONETARIAS = [
+    "MONTO_PIA", "MONTO_CERTIFICADO", "MONTO_COMPROMETIDO_ANUAL",
+    "MONTO_COMPROMETIDO", "MONTO_GIRADO", "MONTO_PIM", "MONTO_DEVENGADO",
+]
+
 # Columnas del CSV que se fuerzan a VARCHAR para no perder ceros a la
 # izquierda ni chocar por tipos mixtos entre columnas texto/numero
 TIPOS_VARCHAR = [
@@ -69,7 +84,6 @@ def cargar_codigos_matriz(path):
         if pd.notna(proy):
             codigos_proyecto.add(str(int(proy)))
         else:
-            # La columna ACTIVIDAD ya no se usa para buscar
             ref = fila["ACTIVIDAD"]
             filas_sin_codigo.append(str(ref)[:80] if pd.notna(ref) else "(fila vacia)")
 
@@ -90,19 +104,36 @@ def consultar_anio(con, anio, tabla_proy):
     url = URL_TEMPLATE.format(anio=anio)
     tipos = {c: "VARCHAR" for c in TIPOS_VARCHAR}
     tipos["ANO_EJE"] = "INTEGER"
-    tipos["MES_EJE"] = "INTEGER"  # sigue en el CSV origen, solo no se selecciona
+    tipos["MES_EJE"] = "INTEGER"
 
     columnas_sql = ", ".join(COLUMNAS_DIM)
+    excluir_sql = ", ".join(["MES_EJE"] + COLUMNAS_MONETARIAS)
+
     query = f"""
+        WITH base AS (
+            SELECT * FROM read_csv('{url}', header = true, types = {tipos})
+            WHERE PRODUCTO_PROYECTO IN (SELECT code FROM {tabla_proy})
+        ),
+        detalle AS (
+            -- Paso 1: colapsar los 12 meses de CADA linea presupuestal individual
+            SELECT * EXCLUDE ({excluir_sql}),
+                   MAX(MONTO_PIM) AS pim_linea,
+                   SUM(MONTO_DEVENGADO) AS devengado_linea
+            FROM base
+            GROUP BY ALL
+        )
+        -- Paso 2: sumar todas las lineas al nivel de agregacion pedido
         SELECT {columnas_sql},
-               MAX(MONTO_PIM) AS MONTO_PIM,
-               SUM(MONTO_DEVENGADO) AS MONTO_DEVENGADO
-        FROM read_csv('{url}', header = true, types = {tipos})
-        WHERE PRODUCTO_PROYECTO IN (SELECT code FROM {tabla_proy})
+               CAST(SUM(pim_linea) AS DOUBLE) AS MONTO_PIM,
+               CAST(SUM(devengado_linea) AS DOUBLE) AS MONTO_DEVENGADO
+        FROM detalle
         GROUP BY {columnas_sql}
     """
     print(f"-> Descargando y filtrando {anio} desde {url} ...")
     df = con.execute(query).df()
+    # Respaldo: asegurar dtype numerico real antes de exportar a CSV
+    df["MONTO_PIM"] = pd.to_numeric(df["MONTO_PIM"], errors="coerce")
+    df["MONTO_DEVENGADO"] = pd.to_numeric(df["MONTO_DEVENGADO"], errors="coerce")
     print(f"   {anio}: {len(df)} filas (agrupadas, sin MES_EJE)")
     return df
 
