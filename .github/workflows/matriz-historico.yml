@@ -38,4 +38,5 @@ jobs:
           cp ejecucion_historica_2021_2025.csv output/ejecucion_historica_2021_2025.csv
           git add output/ejecucion_historica_2021_2025.csv
           git commit -m "Genera ejecucion historica MATRIZ 2021-2025" || echo "Sin cambios"
+          git pull --rebase origin main
           git push
