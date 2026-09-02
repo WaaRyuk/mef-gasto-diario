@@ -13,14 +13,22 @@ Logica de cruce:
     cruzada contra PRODUCTO_PROYECTO. La columna ACTIVIDAD ya NO se usa
     para buscar.
 
-Los datos vienen a nivel mensual en el CSV original; aqui se agrupan
-quitando MES_EJE para no repetir filas por cada mes:
-  - MONTO_DEVENGADO: se SUMA entre los meses transcurridos del anio.
-  - MONTO_PIM: se toma el MAXIMO del anio (es el presupuesto asignado,
-    se repite igual en cada fila mensual, sumarlo lo multiplicaria).
+Sobre la agregacion de montos (IMPORTANTE):
+  El CSV trae, para cada "linea presupuestal" (una combinacion especifica
+  de SEC_FUNC, fuente de financiamiento, clasificador de gasto, etc.), una
+  fila por mes. El PIM se repite igual en cada una de esas filas
+  mensuales, pero puede haber VARIAS lineas distintas bajo la misma
+  Actividad/Proyecto (por ejemplo, si hubo una modificacion presupuestal
+  que agrego una fuente de financiamiento nueva). Por eso la agregacion
+  se hace en dos pasos:
+    1) Se colapsan los meses de CADA linea individual: se toma el PIM de
+       esa linea con MAX (no cambia entre meses) y se SUMA su devengado
+       mensual.
+    2) Recien ahi se suman todas las lineas para llegar al nivel de
+       Actividad/Proyecto/Departamento que pediste. Asi el PIM incluye
+       las modificaciones (lineas nuevas) sin duplicarse por mes.
 """
 
-import re
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 
@@ -48,6 +56,11 @@ COLUMNAS_DIM = [
     "PRODUCTO_PROYECTO", "PRODUCTO_PROYECTO_NOMBRE",
     "ACTIVIDAD_ACCION_OBRA", "ACTIVIDAD_ACCION_OBRA_NOMBRE",
     "DEPARTAMENTO_META", "DEPARTAMENTO_META_NOMBRE",
+]
+
+COLUMNAS_MONETARIAS = [
+    "MONTO_PIA", "MONTO_CERTIFICADO", "MONTO_COMPROMETIDO_ANUAL",
+    "MONTO_COMPROMETIDO", "MONTO_GIRADO", "MONTO_PIM", "MONTO_DEVENGADO",
 ]
 
 TIPOS_VARCHAR = [
@@ -100,15 +113,28 @@ def main():
 
     tipos = {c: "VARCHAR" for c in TIPOS_VARCHAR}
     tipos["ANO_EJE"] = "INTEGER"
-    tipos["MES_EJE"] = "INTEGER"  # sigue en el CSV origen, solo no se selecciona
+    tipos["MES_EJE"] = "INTEGER"
     columnas_sql = ", ".join(COLUMNAS_DIM)
+    excluir_sql = ", ".join(["MES_EJE"] + COLUMNAS_MONETARIAS)
 
     query = f"""
+        WITH base AS (
+            SELECT * FROM read_csv('{URL}', header = true, types = {tipos})
+            WHERE PRODUCTO_PROYECTO IN (SELECT code FROM tabla_proyecto)
+        ),
+        detalle AS (
+            -- Paso 1: colapsar los meses de CADA linea presupuestal individual
+            SELECT * EXCLUDE ({excluir_sql}),
+                   MAX(MONTO_PIM) AS pim_linea,
+                   SUM(MONTO_DEVENGADO) AS devengado_linea
+            FROM base
+            GROUP BY ALL
+        )
+        -- Paso 2: sumar todas las lineas al nivel de agregacion pedido
         SELECT {columnas_sql},
-               MAX(MONTO_PIM) AS MONTO_PIM,
-               SUM(MONTO_DEVENGADO) AS MONTO_DEVENGADO
-        FROM read_csv('{URL}', header = true, types = {tipos})
-        WHERE PRODUCTO_PROYECTO IN (SELECT code FROM tabla_proyecto)
+               SUM(pim_linea) AS MONTO_PIM,
+               SUM(devengado_linea) AS MONTO_DEVENGADO
+        FROM detalle
         GROUP BY {columnas_sql}
     """
     print(f"-> Descargando y filtrando {ANIO} desde {URL} ...")
