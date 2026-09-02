@@ -1,3 +1,4 @@
 duckdb
-pandas
 requests
+pandas
+openpyxl
