@@ -29,14 +29,41 @@ Para el año en curso usar extraer_ejecucion_anio_actual.py.
 
 import duckdb
 import pandas as pd
+import requests
+
+
+def resolver_url_anio(anio):
+    """Prueba cada patron de nombre de archivo conocido y devuelve el
+    primero que exista (HEAD 200) para ese anio."""
+    for patron in PATRONES_URL:
+        url = patron.format(anio=anio)
+        try:
+            resp = requests.head(url, allow_redirects=True, timeout=30)
+            if resp.status_code == 200:
+                return url
+        except requests.RequestException:
+            continue
+    raise FileNotFoundError(
+        f"No se encontro ningun archivo valido para {anio}. "
+        f"Patrones probados: {[p.format(anio=anio) for p in PATRONES_URL]}"
+    )
 
 # ---------------------------------------------------------------------------
 # Configuracion
 # ---------------------------------------------------------------------------
 MATRIZ_PATH = "MATRIZ.xlsx"
 ANIOS = range(2021, 2026)  # 2021, 2022, 2023, 2024, 2025
-URL_TEMPLATE = "https://fs.datosabiertos.mef.gob.pe/datastorefiles/{anio}-Gasto-Diario.csv"
 SALIDA_CSV = "ejecucion_historica_2021_2025.csv"
+
+# El portal del MEF NO usa el mismo nombre de archivo todos los anios:
+# 2024-2026 usan "-Gasto-Diario.csv", pero anios anteriores (2021-2023)
+# publican el mismo dataset como "-Gasto-Mensual.csv" o "-Gasto.csv".
+# Se prueba cada patron en orden y se usa el primero que responda 200.
+PATRONES_URL = [
+    "https://fs.datosabiertos.mef.gob.pe/datastorefiles/{anio}-Gasto-Diario.csv",
+    "https://fs.datosabiertos.mef.gob.pe/datastorefiles/{anio}-Gasto-Mensual.csv",
+    "https://fs.datosabiertos.mef.gob.pe/datastorefiles/{anio}-Gasto.csv",
+]
 
 # Columnas de dimension (todo menos los montos), sin MES_EJE
 COLUMNAS_DIM = [
@@ -101,7 +128,7 @@ def cargar_codigos_matriz(path):
 # 2. Consultar un anio del CSV de Gasto Diario del MEF, agrupado sin MES_EJE
 # ---------------------------------------------------------------------------
 def consultar_anio(con, anio, tabla_proy):
-    url = URL_TEMPLATE.format(anio=anio)
+    url = resolver_url_anio(anio)
     tipos = {c: "VARCHAR" for c in TIPOS_VARCHAR}
     tipos["ANO_EJE"] = "INTEGER"
     tipos["MES_EJE"] = "INTEGER"
