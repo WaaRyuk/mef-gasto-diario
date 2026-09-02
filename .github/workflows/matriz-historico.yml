@@ -1,0 +1,41 @@
+name: Ejecucion historica MATRIZ 2021-2025
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:   # solo manual, este periodo ya cerro y no cambia
+
+jobs:
+  ejecutar-historico:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Ejecutar script historico
+        run: python scripts/extraer_ejecucion_historica_2021_2025.py
+
+      - name: Guardar resultado como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: ejecucion-historica-2021-2025
+          path: ejecucion_historica_2021_2025.csv
+
+      - name: Guardar resultado en el repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          mkdir -p output
+          cp ejecucion_historica_2021_2025.csv output/ejecucion_historica_2021_2025.csv
+          git add output/ejecucion_historica_2021_2025.csv
+          git commit -m "Genera ejecucion historica MATRIZ 2021-2025" || echo "Sin cambios"
+          git push
