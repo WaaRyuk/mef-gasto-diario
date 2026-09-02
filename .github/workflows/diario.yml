@@ -38,4 +38,5 @@ jobs:
           cp economia_finanzas_resumen.csv output/economia_finanzas_resumen.csv
           git add output/energia_minas_resumen.csv output/economia_finanzas_resumen.csv
           git commit -m "Actualiza resumenes diarios" || echo "Sin cambios"
+          git pull --rebase origin main
           git push
