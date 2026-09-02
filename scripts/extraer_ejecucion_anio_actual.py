@@ -132,13 +132,16 @@ def main():
         )
         -- Paso 2: sumar todas las lineas al nivel de agregacion pedido
         SELECT {columnas_sql},
-               SUM(pim_linea) AS MONTO_PIM,
-               SUM(devengado_linea) AS MONTO_DEVENGADO
+               CAST(SUM(pim_linea) AS DOUBLE) AS MONTO_PIM,
+               CAST(SUM(devengado_linea) AS DOUBLE) AS MONTO_DEVENGADO
         FROM detalle
         GROUP BY {columnas_sql}
     """
     print(f"-> Descargando y filtrando {ANIO} desde {URL} ...")
     resultado = con.execute(query).df()
+    # Respaldo: asegurar dtype numerico real antes de exportar a CSV
+    resultado["MONTO_PIM"] = pd.to_numeric(resultado["MONTO_PIM"], errors="coerce")
+    resultado["MONTO_DEVENGADO"] = pd.to_numeric(resultado["MONTO_DEVENGADO"], errors="coerce")
     resultado["FECHA_ACTUALIZACION_ARCHIVO"] = fecha_actualizacion_archivo(URL)
     resultado.to_csv(SALIDA_CSV, index=False)
     print(f"Guardado: {SALIDA_CSV} ({len(resultado)} filas, agrupadas sin MES_EJE)")
