@@ -1,3 +1,5 @@
+import os
+import sys
 import duckdb
 import requests
 from datetime import timezone, timedelta
@@ -9,6 +11,22 @@ SECTOR_MINEM = "ENERGIA Y MINAS"
 SECTOR_ECOFIN = "ECONOMIA Y FINANZAS"
 FILTRO_ONP = "%NORMALIZACION PREVISIONAL%"  # ILIKE sobre PLIEGO_NOMBRE
 
+# Archivo marcador: guarda el Last-Modified del CSV origen que se proceso
+# la ultima vez. Vive en output/ para que quede versionado en el repo y
+# sobreviva entre corridas del workflow.
+MARCADOR = "output/ultima_actualizacion.txt"
+
+
+def avisar_workflow(procesado):
+    """Informa al workflow de GitHub Actions si hubo o no procesamiento,
+    para que los pasos siguientes (artefacto, commit) se salten cuando
+    no hay nada nuevo. Si se corre local, no hace nada."""
+    github_env = os.environ.get("GITHUB_ENV")
+    if github_env:
+        with open(github_env, "a") as f:
+            f.write(f"PROCESADO={'true' if procesado else 'false'}\n")
+
+
 # 1. Fecha de última actualización del archivo origen (una sola vez, se usa en ambos CSV)
 resp = requests.head(url)
 last_modified_raw = resp.headers.get("Last-Modified")
@@ -18,6 +36,24 @@ if last_modified_raw:
     fecha_actualizacion = fecha_peru.strftime("%Y-%m-%d %H:%M:%S")
 else:
     fecha_actualizacion = "No disponible"
+
+# 1b. Comparar contra lo ya procesado: si el archivo del MEF no cambió,
+#     salir sin descargar los ~480 MB ni generar commits vacios.
+if os.path.exists(MARCADOR):
+    with open(MARCADOR) as f:
+        ultima_procesada = f.read().strip()
+else:
+    ultima_procesada = None
+
+print("Last-Modified del archivo MEF :", fecha_actualizacion)
+print("Ultima version procesada      :", ultima_procesada or "(ninguna)")
+
+if fecha_actualizacion != "No disponible" and fecha_actualizacion == ultima_procesada:
+    print("Sin cambios en el archivo origen. No se reprocesa nada.")
+    avisar_workflow(False)
+    sys.exit(0)
+
+print("Hay datos nuevos. Procesando...")
 
 con = duckdb.connect()
 
@@ -216,6 +252,14 @@ resultado_ecofin = con.execute(f"""
 
 resultado_ecofin["FECHA_ACTUALIZACION_ARCHIVO"] = fecha_actualizacion
 resultado_ecofin.to_csv("economia_finanzas_resumen.csv", index=False)
+
+# 4. Dejar constancia de que ESTA version del archivo origen ya se proceso,
+#    para que la proxima corrida sepa si hay algo nuevo o no.
+os.makedirs("output", exist_ok=True)
+with open(MARCADOR, "w") as f:
+    f.write(fecha_actualizacion)
+
+avisar_workflow(True)
 
 # Validaciones rápidas
 print("=== MINEM ===")
