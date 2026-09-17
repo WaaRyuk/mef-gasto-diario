@@ -3,6 +3,8 @@ permissions:
   contents: write
 on:
   schedule:
+    # Respaldo por si el disparo externo (cron-job.org) falla.
+    # En UTC; Peru es UTC-5. Cubre 09:07 a 15:07 hora Peru.
     - cron: '7 14 * * *'
     - cron: '7 16 * * *'
     - cron: '7 18 * * *'
@@ -21,8 +23,12 @@ jobs:
       - name: Instalar dependencias
         run: pip install -r requirements.txt
       - name: Ejecutar script
+        # El script compara el Last-Modified del CSV del MEF contra
+        # output/ultima_actualizacion.txt. Si no cambio, sale en segundos
+        # y deja PROCESADO=false, y los pasos siguientes se saltan.
         run: python scripts/resumen_combinado.py
       - name: Guardar resultados como artefactos
+        if: env.PROCESADO == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: resumenes-mef
@@ -30,13 +36,14 @@ jobs:
             energia_minas_resumen.csv
             economia_finanzas_resumen.csv
       - name: Guardar resultados en el repo
+        if: env.PROCESADO == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           mkdir -p output
           cp energia_minas_resumen.csv output/energia_minas_resumen.csv
           cp economia_finanzas_resumen.csv output/economia_finanzas_resumen.csv
-          git add output/energia_minas_resumen.csv output/economia_finanzas_resumen.csv
+          git add output/energia_minas_resumen.csv output/economia_finanzas_resumen.csv output/ultima_actualizacion.txt
           git commit -m "Actualiza resumenes diarios" || echo "Sin cambios"
           git pull --rebase origin main
           git push
