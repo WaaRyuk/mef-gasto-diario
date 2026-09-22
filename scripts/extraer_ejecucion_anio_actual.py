@@ -1,5 +1,5 @@
 """
-Igual que extraer_ejecucion_anio_actual.py, pero filtrando SOLO el
+Ejecucion del anio en curso de los proyectos de MATRIZ, filtrando SOLO el
 RUBRO 13 (DONACIONES Y TRANSFERENCIAS).
 
 - Cruce: columna B (PROYECTO) de MATRIZ.xlsx contra PRODUCTO_PROYECTO.
@@ -23,7 +23,7 @@ MATRIZ_PATH = "MATRIZ.xlsx"
 ANIO = datetime.now().year
 RUBRO_FILTRO = "13"  # DONACIONES Y TRANSFERENCIAS
 URL = f"https://fs.datosabiertos.mef.gob.pe/datastorefiles/{ANIO}-Gasto-Diario.csv"
-SALIDA_CSV = f"ejecucion_{ANIO}_rubro13.csv"
+SALIDA_CSV = f"ejecucion_{ANIO}.csv"
 
 COLUMNAS_DIM = [
     "ANO_EJE", "NIVEL_GOBIERNO", "NIVEL_GOBIERNO_NOMBRE",
