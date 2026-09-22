@@ -1,13 +1,13 @@
-name: Ejecucion historica MATRIZ 2021-2025 (Rubro 13)
+name: Ejecucion historica MATRIZ 2021-2025
 
 permissions:
   contents: write
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:   # solo manual, este periodo ya cerro y no cambia
 
 jobs:
-  ejecutar-historico-rubro13:
+  ejecutar-historico:
     runs-on: ubuntu-latest
     steps:
       - name: Descargar repositorio
@@ -18,20 +18,20 @@ jobs:
           python-version: '3.11'
       - name: Instalar dependencias
         run: pip install -r requirements.txt
-      - name: Ejecutar script historico rubro 13
-        run: python scripts/extraer_ejecucion_historica_2021_2025_rubro13.py
+      - name: Ejecutar script historico
+        run: python scripts/extraer_ejecucion_historica_2021_2025.py
       - name: Guardar resultado como artefacto
         uses: actions/upload-artifact@v4
         with:
-          name: ejecucion-historica-2021-2025-rubro13
-          path: ejecucion_historica_2021_2025_rubro13.csv
+          name: ejecucion-historica-2021-2025
+          path: ejecucion_historica_2021_2025.csv
       - name: Guardar resultado en el repo
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           mkdir -p output
-          cp ejecucion_historica_2021_2025_rubro13.csv output/
-          git add output/ejecucion_historica_2021_2025_rubro13.csv
-          git commit -m "Genera ejecucion historica MATRIZ rubro 13" || echo "Sin cambios"
+          cp ejecucion_historica_2021_2025.csv output/ejecucion_historica_2021_2025.csv
+          git add output/ejecucion_historica_2021_2025.csv
+          git commit -m "Genera ejecucion historica MATRIZ 2021-2025" || echo "Sin cambios"
           git pull --rebase origin main
           git push
