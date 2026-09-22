@@ -1,15 +1,15 @@
-name: Ejecucion anio actual MATRIZ (Rubro 13)
+name: Ejecucion anio actual MATRIZ
 
 permissions:
   contents: write
 
 on:
   schedule:
-    - cron: '17 14 * * *'   # 09:17 Peru (desfasado 10 min del matriz-anual)
+    - cron: '7 14 * * *'   # 9:07 am hora Peru, todos los dias
   workflow_dispatch:
 
 jobs:
-  ejecutar-anio-actual-rubro13:
+  ejecutar-anio-actual:
     runs-on: ubuntu-latest
     steps:
       - name: Descargar repositorio
@@ -20,20 +20,20 @@ jobs:
           python-version: '3.11'
       - name: Instalar dependencias
         run: pip install -r requirements.txt
-      - name: Ejecutar script anio actual rubro 13
-        run: python scripts/extraer_ejecucion_anio_actual_rubro13.py
+      - name: Ejecutar script anio actual
+        run: python scripts/extraer_ejecucion_anio_actual.py
       - name: Guardar resultado como artefacto
         uses: actions/upload-artifact@v4
         with:
-          name: ejecucion-anio-actual-rubro13
-          path: ejecucion_*_rubro13.csv
+          name: ejecucion-anio-actual
+          path: ejecucion_*.csv
       - name: Guardar resultado en el repo
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           mkdir -p output
-          cp ejecucion_*_rubro13.csv output/
-          git add output/ejecucion_*_rubro13.csv
-          git commit -m "Actualiza ejecucion MATRIZ rubro 13 anio actual" || echo "Sin cambios"
+          cp ejecucion_*.csv output/
+          git add output/ejecucion_*.csv
+          git commit -m "Actualiza ejecucion MATRIZ anio actual" || echo "Sin cambios"
           git pull --rebase origin main
           git push
