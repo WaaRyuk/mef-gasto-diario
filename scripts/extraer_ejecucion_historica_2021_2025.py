@@ -1,5 +1,5 @@
 """
-Igual que extraer_ejecucion_historica_2021_2025.py, pero filtrando SOLO
+Ejecucion historica 2021-2025 de los proyectos de MATRIZ, filtrando SOLO
 el RUBRO 13 (DONACIONES Y TRANSFERENCIAS).
 
 - Cruce: columna B (PROYECTO) de MATRIZ.xlsx contra PRODUCTO_PROYECTO.
@@ -21,7 +21,7 @@ import requests
 MATRIZ_PATH = "MATRIZ.xlsx"
 ANIOS = range(2021, 2026)
 RUBRO_FILTRO = "13"  # DONACIONES Y TRANSFERENCIAS
-SALIDA_CSV = "ejecucion_historica_2021_2025_rubro13.csv"
+SALIDA_CSV = "ejecucion_historica_2021_2025.csv"
 
 PATRONES_URL = [
     "https://fs.datosabiertos.mef.gob.pe/datastorefiles/{anio}-Gasto-Diario.csv",
