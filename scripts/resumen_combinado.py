@@ -1,8 +1,9 @@
 import os
 import sys
+import time
 import duckdb
 import requests
-from datetime import timezone, timedelta
+from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 
 url = "https://fs.datosabiertos.mef.gob.pe/datastorefiles/2026-Gasto-Diario.csv"
@@ -16,6 +17,9 @@ FILTRO_ONP = "%NORMALIZACION PREVISIONAL%"  # ILIKE sobre PLIEGO_NOMBRE
 # sobreviva entre corridas del workflow.
 MARCADOR = "output/ultima_actualizacion.txt"
 
+PERU = timezone(timedelta(hours=-5))
+FMT = "%Y-%m-%d %H:%M:%S"
+
 
 def avisar_workflow(procesado):
     """Informa al workflow de GitHub Actions si hubo o no procesamiento,
@@ -27,29 +31,65 @@ def avisar_workflow(procesado):
             f.write(f"PROCESADO={'true' if procesado else 'false'}\n")
 
 
-# 1. Fecha de última actualización del archivo origen (una sola vez, se usa en ambos CSV)
-resp = requests.head(url)
-last_modified_raw = resp.headers.get("Last-Modified")
-if last_modified_raw:
-    fecha_gmt = parsedate_to_datetime(last_modified_raw)
-    fecha_peru = fecha_gmt.astimezone(timezone(timedelta(hours=-5)))
-    fecha_actualizacion = fecha_peru.strftime("%Y-%m-%d %H:%M:%S")
-else:
-    fecha_actualizacion = "No disponible"
-
-# 1b. Comparar contra lo ya procesado: si el archivo del MEF no cambió,
-#     salir sin descargar los ~480 MB ni generar commits vacios.
+# 1. Version ya procesada (marcador), como datetime para poder comparar
+ultima_procesada = None
 if os.path.exists(MARCADOR):
     with open(MARCADOR) as f:
-        ultima_procesada = f.read().strip()
-else:
-    ultima_procesada = None
+        try:
+            ultima_procesada = datetime.strptime(f.read().strip(), FMT).replace(tzinfo=PERU)
+        except ValueError:
+            ultima_procesada = None
+
+
+def leer_last_modified(intentos=3, espera=15):
+    """HEAD con cache-busting y reintentos. Corta apenas ve algo mas nuevo
+    que lo ya procesado. Devuelve el Last-Modified mas reciente visto (GMT)."""
+    mejor = None
+    for i in range(1, intentos + 1):
+        try:
+            r = requests.head(
+                url,
+                params={"nc": int(time.time())},
+                headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+                allow_redirects=True,
+                timeout=30,
+            )
+            lm = r.headers.get("Last-Modified")
+            print(
+                f"Intento {i}: status={r.status_code} Last-Modified={lm} "
+                f"Content-Length={r.headers.get('Content-Length')} "
+                f"Age={r.headers.get('Age')} Date={r.headers.get('Date')} "
+                f"Via={r.headers.get('Via')} X-Cache={r.headers.get('X-Cache')}"
+            )
+            if lm:
+                dt = parsedate_to_datetime(lm)
+                if mejor is None or dt > mejor:
+                    mejor = dt
+                if ultima_procesada is None or dt.astimezone(PERU) > ultima_procesada:
+                    break  # ya hay algo nuevo, no hace falta insistir
+        except requests.RequestException as e:
+            print(f"Intento {i}: error de red -> {e}")
+        if i < intentos:
+            time.sleep(espera)
+    return mejor
+
+
+fecha_gmt = leer_last_modified()
+if fecha_gmt is None:
+    print("No se pudo leer Last-Modified. No se reprocesa.")
+    avisar_workflow(False)
+    sys.exit(0)
+
+fecha_peru = fecha_gmt.astimezone(PERU)
+fecha_actualizacion = fecha_peru.strftime(FMT)
 
 print("Last-Modified del archivo MEF :", fecha_actualizacion)
-print("Ultima version procesada      :", ultima_procesada or "(ninguna)")
+print("Ultima version procesada      :", ultima_procesada.strftime(FMT) if ultima_procesada else "(ninguna)")
 
-if fecha_actualizacion != "No disponible" and fecha_actualizacion == ultima_procesada:
-    print("Sin cambios en el archivo origen. No se reprocesa nada.")
+# Solo se procesa si es ESTRICTAMENTE mas nuevo. Si el servidor devuelve una
+# version anterior (cache desfasada), no se reprocesa ni se retrocede el marcador.
+if ultima_procesada and fecha_peru <= ultima_procesada:
+    print("Sin datos nuevos (o el servidor devolvio una version anterior). No se reprocesa.")
     avisar_workflow(False)
     sys.exit(0)
 
@@ -58,7 +98,6 @@ print("Hay datos nuevos. Procesando...")
 con = duckdb.connect()
 
 # 2. UNA sola lectura del CSV (superset de columnas que necesitan ambos análisis)
-#    Se agrega RUBRO y RUBRO_NOMBRE (verificar que estos sean los nombres reales de columna en el CSV)
 con.execute(f"""
     CREATE TEMP TABLE base AS
     SELECT SECTOR_NOMBRE, PLIEGO, PLIEGO_NOMBRE, EJECUTORA, EJECUTORA_NOMBRE,
@@ -91,7 +130,7 @@ con.execute(f"""
     WHERE NIVEL_GOBIERNO = 'E'
 """)
 
-# 3a. Consulta MINEM (mismo resultado que resumen_energia.py, + GENERICA con TIPO_TRANSACCION, + ANO_EJE, + RUBRO)
+# 3a. Consulta MINEM
 resultado_minem = con.execute(f"""
     WITH minem AS (
         SELECT SECTOR_NOMBRE,
@@ -154,7 +193,7 @@ resultado_minem = con.execute(f"""
 resultado_minem["FECHA_ACTUALIZACION_ARCHIVO"] = fecha_actualizacion
 resultado_minem.to_csv("energia_minas_resumen.csv", index=False)
 
-# 3b. Consulta Economia y Finanzas (mismo resultado que resumen_economia_finanzas.py, + GENERICA con TIPO_TRANSACCION, + RUBRO)
+# 3b. Consulta Economia y Finanzas
 resultado_ecofin = con.execute(f"""
     WITH onp AS (
         SELECT
