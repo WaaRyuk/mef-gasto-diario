@@ -159,7 +159,7 @@ resultado_minem = con.execute(f"""
                    WHEN 5 THEN 'May' WHEN 6 THEN 'Jun' WHEN 7 THEN 'Jul' WHEN 8 THEN 'Ago'
                    WHEN 9 THEN 'Set' WHEN 10 THEN 'Oct' WHEN 11 THEN 'Nov' WHEN 12 THEN 'Dic'
                    ELSE 'Sin mes' END AS MES,
-               MONTO_PIM, MONTO_CERTIFICADO, MONTO_COMPROMETIDO_ANUAL, MONTO_COMPROMETIDO, MONTO_DEVENGADO
+               MONTO_PIA, MONTO_PIM, MONTO_CERTIFICADO, MONTO_COMPROMETIDO_ANUAL, MONTO_COMPROMETIDO, MONTO_DEVENGADO
         FROM base
         WHERE SECTOR_NOMBRE = '{SECTOR_MINEM}'
     )
@@ -175,7 +175,7 @@ resultado_minem = con.execute(f"""
            CAST(NULL AS VARCHAR) AS PROGRAMA_PPTO,
            CAST(NULL AS VARCHAR) AS SEC_FUNC, CAST(NULL AS VARCHAR) AS CLASIFICADOR,
            CAST(NULL AS INTEGER) AS ANO_EJE, CAST(NULL AS INTEGER) AS MES_EJE, CAST(NULL AS VARCHAR) AS MES,
-           SUM(MONTO_PIM) AS pim, SUM(MONTO_CERTIFICADO) AS certificado,
+           SUM(MONTO_PIA) AS pia, SUM(MONTO_PIM) AS pim, SUM(MONTO_CERTIFICADO) AS certificado,
            SUM(MONTO_COMPROMETIDO_ANUAL) AS comp_anual, SUM(MONTO_COMPROMETIDO) AS comprometido,
            SUM(MONTO_DEVENGADO) AS devengado
     FROM base
@@ -189,7 +189,7 @@ resultado_minem = con.execute(f"""
            PROGRAMA_PPTO,
            SEC_FUNC, CLASIFICADOR,
            ANO_EJE, MES_EJE, MES,
-           SUM(MONTO_PIM) AS pim, SUM(MONTO_CERTIFICADO) AS certificado,
+           SUM(MONTO_PIA) AS pia, SUM(MONTO_PIM) AS pim, SUM(MONTO_CERTIFICADO) AS certificado,
            SUM(MONTO_COMPROMETIDO_ANUAL) AS comp_anual, SUM(MONTO_COMPROMETIDO) AS comprometido,
            SUM(MONTO_DEVENGADO) AS devengado
     FROM minem
