@@ -1,0 +1,59 @@
+name: Historico gasto MEF
+
+permissions:
+  contents: write
+  actions: write
+
+on:
+  schedule:
+    # 1 de febrero, 00:30 hora Peru (UTC-5). Los dias 2 y 3 son respaldo: si el
+    # año ya entro, la corrida no hace nada.
+    - cron: '30 5 1-3 2 *'
+  workflow_dispatch:   # primera carga 2020-2025 y relanzamientos
+
+concurrency:
+  group: historico-mef
+  cancel-in-progress: false
+
+jobs:
+  actualizar-historico:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      - name: Procesar años pendientes, uno por uno
+        # Cada año se guarda en el repo apenas termina. Si uno falla, se sigue
+        # con los demas y la corrida queda en rojo; al relanzar solo procesa lo
+        # que falta.
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          pendientes=$(python scripts/actualizar_historico.py --pendientes)
+          echo "Años pendientes: ${pendientes:-ninguno}"
+          fallo=0
+          for anio in $pendientes; do
+            if python scripts/actualizar_historico.py --anio "$anio"; then
+              git add output/historico_energia_minas.csv output/historico_economia_finanzas.csv output/historico_control.json
+              git commit -m "Agrega $anio al historico"
+              git pull --rebase origin main
+              git push
+              echo "HUBO_CAMBIOS=true" >> "$GITHUB_ENV"
+            else
+              fallo=1
+            fi
+          done
+          exit $fallo
+      - name: Regenerar el resumen diario
+        # Para que el año recien agregado salga del diario de inmediato y no
+        # quede duplicado en Power BI hasta la siguiente corrida.
+        if: ${{ !cancelled() && env.HUBO_CAMBIOS == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run diario.yml --ref main --repo "$GITHUB_REPOSITORY"
