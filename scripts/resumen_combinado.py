@@ -1,24 +1,64 @@
+"""
+Resumen diario del gasto MEF (MINEM y ECOFIN/ONP).
+
+Años que lee, segun la fecha en Peru:
+- 1 feb a 31 dic: solo el año en curso.
+- 1 a 31 ene: el año anterior y, apenas el MEF lo publique, tambien el nuevo.
+- Si el año ya cerrado todavia no entro al historico (el corte del 1 de febrero
+  fallo o aun no corre), se sigue leyendo para que no desaparezca de ambos lados.
+
+Solo reprocesa si algun archivo del MEF es mas nuevo que lo ya procesado o si
+cambio la lista de años a leer.
+"""
+import json
 import os
 import sys
 import time
-import duckdb
-import requests
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 
-url = "https://fs.datosabiertos.mef.gob.pe/datastorefiles/2026-Gasto-Diario.csv"
+import duckdb
+import pandas as pd
+import requests
+
+URL_PLANTILLA = "https://fs.datosabiertos.mef.gob.pe/datastorefiles/{anio}-Gasto-Diario.csv"
 
 SECTOR_MINEM = "ENERGIA Y MINAS"
 SECTOR_ECOFIN = "ECONOMIA Y FINANZAS"
 FILTRO_ONP = "%NORMALIZACION PREVISIONAL%"  # ILIKE sobre PLIEGO_NOMBRE
 
-# Archivo marcador: guarda el Last-Modified del CSV origen que se proceso
-# la ultima vez. Vive en output/ para que quede versionado en el repo y
-# sobreviva entre corridas del workflow.
+# Fecha de la version vigente (la del año mas reciente). Se mantiene por
+# compatibilidad: es la misma que sale en FECHA_ACTUALIZACION_ARCHIVO.
 MARCADOR = "output/ultima_actualizacion.txt"
+# Last-Modified procesado de cada año que se esta leyendo. Decide si hay algo nuevo.
+MARCADOR_ANIOS = "output/ultima_actualizacion_por_anio.json"
+# Años que ya estan en el historico. Lo escribe scripts/actualizar_historico.py.
+CONTROL_HISTORICO = "output/historico_control.json"
+
+# 2020-2025 entran con la carga inicial; desde 2026 entran por corte anual.
+ANIO_PRIMER_CORTE = 2026
 
 PERU = timezone(timedelta(hours=-5))
 FMT = "%Y-%m-%d %H:%M:%S"
+
+COLUMNAS_TEXTO = [
+    "NIVEL_GOBIERNO", "SECTOR_NOMBRE", "PLIEGO", "PLIEGO_NOMBRE", "EJECUTORA", "EJECUTORA_NOMBRE",
+    "TIPO_ACT_PROY_NOMBRE",
+    "GENERICA", "GENERICA_NOMBRE",
+    "FUENTE_FINANCIAMIENTO", "FUENTE_FINANCIAMIENTO_NOMBRE",
+    "RUBRO", "RUBRO_NOMBRE",
+    "PRODUCTO_PROYECTO", "PRODUCTO_PROYECTO_NOMBRE",
+    "ACTIVIDAD_ACCION_OBRA", "ACTIVIDAD_ACCION_OBRA_NOMBRE",
+    "PROGRAMA_PPTO", "PROGRAMA_PPTO_NOMBRE",
+    "SEC_FUNC",
+    "FINALIDAD",
+    "TIPO_TRANSACCION", "SUBGENERICA", "SUBGENERICA_DET", "ESPECIFICA", "ESPECIFICA_DET", "ESPECIFICA_DET_NOMBRE",
+]
+COLUMNAS_ENTERAS = ["ANO_EJE", "MES_EJE"]
+COLUMNAS_MONTO = [
+    "MONTO_PIA", "MONTO_PIM", "MONTO_CERTIFICADO", "MONTO_COMPROMETIDO_ANUAL", "MONTO_COMPROMETIDO",
+    "MONTO_DEVENGADO", "MONTO_GIRADO",
+]
 
 
 def avisar_workflow(procesado):
@@ -31,20 +71,41 @@ def avisar_workflow(procesado):
             f.write(f"PROCESADO={'true' if procesado else 'false'}\n")
 
 
-# 1. Version ya procesada (marcador), como datetime para poder comparar
-ultima_procesada = None
-if os.path.exists(MARCADOR):
-    with open(MARCADOR) as f:
+def hoy_peru():
+    return datetime.now(PERU).date()
+
+
+def ultimo_anio_cerrado(hoy):
+    """El año se da por cerrado el 1 de febrero del año siguiente."""
+    return hoy.year - 1 if hoy.month >= 2 else hoy.year - 2
+
+
+def leer_json(ruta):
+    if not os.path.exists(ruta):
+        return {}
+    with open(ruta) as f:
         try:
-            ultima_procesada = datetime.strptime(f.read().strip(), FMT).replace(tzinfo=PERU)
+            return json.load(f)
         except ValueError:
-            ultima_procesada = None
+            return {}
 
 
-def leer_last_modified(intentos=3, espera=15):
-    """HEAD con cache-busting y reintentos. Corta apenas ve algo mas nuevo
-    que lo ya procesado. Devuelve el Last-Modified mas reciente visto (GMT)."""
+def anios_a_leer(hoy, anios_en_historico):
+    """Lista ordenada de años que debe leer el resumen diario."""
+    anios = {hoy.year}
+    if hoy.month == 1:
+        anios.add(hoy.year - 1)
+    for anio in range(ANIO_PRIMER_CORTE, ultimo_anio_cerrado(hoy) + 1):
+        if anio not in anios_en_historico:
+            anios.add(anio)
+    return sorted(anios)
+
+
+def leer_last_modified(url, ultima_procesada, intentos=3, espera=15):
+    """HEAD con cache-busting y reintentos. Corta apenas ve algo mas nuevo que
+    lo ya procesado. Devuelve (no_publicado, Last-Modified mas reciente visto)."""
     mejor = None
+    no_publicado = False
     for i in range(1, intentos + 1):
         try:
             r = requests.head(
@@ -61,7 +122,10 @@ def leer_last_modified(intentos=3, espera=15):
                 f"Age={r.headers.get('Age')} Date={r.headers.get('Date')} "
                 f"Via={r.headers.get('Via')} X-Cache={r.headers.get('X-Cache')}"
             )
-            if lm:
+            if r.status_code in (403, 404):
+                no_publicado = True
+                break
+            if lm and r.status_code == 200:
                 dt = parsedate_to_datetime(lm)
                 if mejor is None or dt > mejor:
                     mejor = dt
@@ -71,69 +135,49 @@ def leer_last_modified(intentos=3, espera=15):
             print(f"Intento {i}: error de red -> {e}")
         if i < intentos:
             time.sleep(espera)
-    return mejor
+    return no_publicado, mejor
 
 
-fecha_gmt = leer_last_modified()
-if fecha_gmt is None:
-    print("No se pudo leer Last-Modified. No se reprocesa.")
-    avisar_workflow(False)
-    sys.exit(0)
+def cargar_base(con, url):
+    """UNA sola lectura del CSV (superset de columnas que necesitan ambos analisis).
+    Si un año antiguo no trae alguna columna, entra vacia y se avisa en el log."""
+    existentes = {
+        fila[0].upper(): fila[0]
+        for fila in con.execute(
+            f"DESCRIBE SELECT * FROM read_csv('{url}', header = true, all_varchar = true)"
+        ).fetchall()
+    }
 
-fecha_peru = fecha_gmt.astimezone(PERU)
-fecha_actualizacion = fecha_peru.strftime(FMT)
+    tipos, columnas_sql, faltantes = {}, [], []
+    for grupo, tipo in (
+        (COLUMNAS_TEXTO, "VARCHAR"),
+        (COLUMNAS_ENTERAS, "INTEGER"),
+        (COLUMNAS_MONTO, "DOUBLE"),
+    ):
+        for columna in grupo:
+            nombre = existentes.get(columna)
+            if nombre:
+                tipos[nombre] = tipo
+                columnas_sql.append(f'"{nombre}" AS {columna}')
+            else:
+                faltantes.append(columna)
+                columnas_sql.append(f"CAST(NULL AS {tipo}) AS {columna}")
+    if faltantes:
+        print(f"AVISO: {url} no trae las columnas {faltantes}; quedan vacias.")
 
-print("Last-Modified del archivo MEF :", fecha_actualizacion)
-print("Ultima version procesada      :", ultima_procesada.strftime(FMT) if ultima_procesada else "(ninguna)")
+    tipos_sql = ", ".join(f"'{k}': '{v}'" for k, v in tipos.items())
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE base AS
+        SELECT * FROM (
+            SELECT {", ".join(columnas_sql)}
+            FROM read_csv('{url}', header = true, types = {{{tipos_sql}}})
+        )
+        WHERE NIVEL_GOBIERNO = 'E'
+    """)
 
-# Solo se procesa si es ESTRICTAMENTE mas nuevo. Si el servidor devuelve una
-# version anterior (cache desfasada), no se reprocesa ni se retrocede el marcador.
-if ultima_procesada and fecha_peru <= ultima_procesada:
-    print("Sin datos nuevos (o el servidor devolvio una version anterior). No se reprocesa.")
-    avisar_workflow(False)
-    sys.exit(0)
 
-print("Hay datos nuevos. Procesando...")
-
-con = duckdb.connect()
-
-# 2. UNA sola lectura del CSV (superset de columnas que necesitan ambos análisis)
-con.execute(f"""
-    CREATE TEMP TABLE base AS
-    SELECT SECTOR_NOMBRE, PLIEGO, PLIEGO_NOMBRE, EJECUTORA, EJECUTORA_NOMBRE,
-           TIPO_ACT_PROY_NOMBRE,
-           GENERICA, GENERICA_NOMBRE,
-           FUENTE_FINANCIAMIENTO, FUENTE_FINANCIAMIENTO_NOMBRE,
-           RUBRO, RUBRO_NOMBRE,
-           PRODUCTO_PROYECTO, PRODUCTO_PROYECTO_NOMBRE,
-           ACTIVIDAD_ACCION_OBRA, ACTIVIDAD_ACCION_OBRA_NOMBRE,
-           PROGRAMA_PPTO, PROGRAMA_PPTO_NOMBRE,
-           SEC_FUNC, ANO_EJE, MES_EJE,
-           FINALIDAD,
-           TIPO_TRANSACCION, SUBGENERICA, SUBGENERICA_DET, ESPECIFICA, ESPECIFICA_DET, ESPECIFICA_DET_NOMBRE,
-           MONTO_PIA, MONTO_PIM, MONTO_CERTIFICADO, MONTO_COMPROMETIDO_ANUAL, MONTO_COMPROMETIDO,
-           MONTO_DEVENGADO, MONTO_GIRADO
-    FROM read_csv(
-        '{url}',
-        header = true,
-        types = {{
-            'PLIEGO': 'VARCHAR', 'EJECUTORA': 'VARCHAR', 'NIVEL_GOBIERNO': 'VARCHAR',
-            'GENERICA': 'VARCHAR', 'FUENTE_FINANCIAMIENTO': 'VARCHAR',
-            'RUBRO': 'VARCHAR',
-            'FINALIDAD': 'VARCHAR',
-            'PRODUCTO_PROYECTO': 'VARCHAR', 'PROGRAMA_PPTO': 'VARCHAR',
-            'ACTIVIDAD_ACCION_OBRA': 'VARCHAR',
-            'SEC_FUNC': 'VARCHAR', 'TIPO_TRANSACCION': 'VARCHAR',
-            'SUBGENERICA': 'VARCHAR', 'SUBGENERICA_DET': 'VARCHAR',
-            'ESPECIFICA': 'VARCHAR', 'ESPECIFICA_DET': 'VARCHAR',
-            'ANO_EJE': 'INTEGER', 'MES_EJE': 'INTEGER'
-        }}
-    )
-    WHERE NIVEL_GOBIERNO = 'E'
-""")
-
-# 3a. Consulta MINEM
-resultado_minem = con.execute(f"""
+def consultar_minem(con):
+    return con.execute(f"""
     WITH minem AS (
         SELECT SECTOR_NOMBRE,
                TRIM(PLIEGO) || '. ' || PLIEGO_NOMBRE AS PLIEGO,
@@ -174,13 +218,13 @@ resultado_minem = con.execute(f"""
            CAST(NULL AS VARCHAR) AS ACTIVIDAD_ACCION_OBRA_NOMBRE,
            CAST(NULL AS VARCHAR) AS PROGRAMA_PPTO,
            CAST(NULL AS VARCHAR) AS SEC_FUNC, CAST(NULL AS VARCHAR) AS CLASIFICADOR,
-           CAST(NULL AS INTEGER) AS ANO_EJE, CAST(NULL AS INTEGER) AS MES_EJE, CAST(NULL AS VARCHAR) AS MES,
+           ANO_EJE, CAST(NULL AS INTEGER) AS MES_EJE, CAST(NULL AS VARCHAR) AS MES,
            SUM(MONTO_PIA) AS pia, SUM(MONTO_PIM) AS pim, SUM(MONTO_CERTIFICADO) AS certificado,
            SUM(MONTO_COMPROMETIDO_ANUAL) AS comp_anual, SUM(MONTO_COMPROMETIDO) AS comprometido,
            SUM(MONTO_DEVENGADO) AS devengado
     FROM base
     WHERE SECTOR_NOMBRE <> '{SECTOR_MINEM}'
-    GROUP BY SECTOR_NOMBRE, TIPO_ACT_PROY_NOMBRE
+    GROUP BY SECTOR_NOMBRE, TIPO_ACT_PROY_NOMBRE, ANO_EJE
     UNION ALL
     SELECT 'Detalle MINEM' AS NIVEL_DETALLE, SECTOR_NOMBRE, PLIEGO, EJECUTORA,
            TIPO_ACT_PROY_NOMBRE, GENERICA, FUENTE_FINANCIAMIENTO, RUBRO, RUBRO_NOMBRE,
@@ -200,11 +244,9 @@ resultado_minem = con.execute(f"""
     ORDER BY NIVEL_DETALLE, SECTOR_NOMBRE, pim DESC
 """).df()
 
-resultado_minem["FECHA_ACTUALIZACION_ARCHIVO"] = fecha_actualizacion
-resultado_minem.to_csv("energia_minas_resumen.csv", index=False)
 
-# 3b. Consulta Economia y Finanzas
-resultado_ecofin = con.execute(f"""
+def consultar_ecofin(con):
+    return con.execute(f"""
     WITH onp AS (
         SELECT
             TRIM(PLIEGO) || '. ' || PLIEGO_NOMBRE AS PLIEGO_D,
@@ -252,14 +294,14 @@ resultado_ecofin = con.execute(f"""
            CAST(NULL AS VARCHAR) AS ACTIVIDAD_ACCION_OBRA_NOMBRE,
            CAST(NULL AS VARCHAR) AS PROGRAMA_PPTO,
            CAST(NULL AS VARCHAR) AS SEC_FUNC, CAST(NULL AS VARCHAR) AS CLASIFICADOR,
-           CAST(NULL AS INTEGER) AS ANO_EJE, CAST(NULL AS INTEGER) AS MES_EJE,
+           ANO_EJE, CAST(NULL AS INTEGER) AS MES_EJE,
            CAST(NULL AS VARCHAR) AS MES, CAST(NULL AS DATE) AS FECHA,
            SUM(MONTO_PIA) AS pia, SUM(MONTO_PIM) AS pim, SUM(MONTO_CERTIFICADO) AS certificado,
            SUM(MONTO_COMPROMETIDO_ANUAL) AS comp_anual, SUM(MONTO_COMPROMETIDO) AS comprometido,
            SUM(MONTO_DEVENGADO) AS devengado, SUM(MONTO_GIRADO) AS girado
     FROM base
     WHERE SECTOR_NOMBRE <> '{SECTOR_ECOFIN}'
-    GROUP BY SECTOR_NOMBRE
+    GROUP BY SECTOR_NOMBRE, ANO_EJE
 
     UNION ALL
 
@@ -276,13 +318,13 @@ resultado_ecofin = con.execute(f"""
            CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR),
            CAST(NULL AS VARCHAR),
            CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR),
-           CAST(NULL AS INTEGER), CAST(NULL AS INTEGER), CAST(NULL AS VARCHAR), CAST(NULL AS DATE),
+           ANO_EJE, CAST(NULL AS INTEGER), CAST(NULL AS VARCHAR), CAST(NULL AS DATE),
            SUM(MONTO_PIA), SUM(MONTO_PIM), SUM(MONTO_CERTIFICADO),
            SUM(MONTO_COMPROMETIDO_ANUAL), SUM(MONTO_COMPROMETIDO),
            SUM(MONTO_DEVENGADO), SUM(MONTO_GIRADO)
     FROM base
     WHERE SECTOR_NOMBRE = '{SECTOR_ECOFIN}' AND PLIEGO_NOMBRE NOT ILIKE '{FILTRO_ONP}'
-    GROUP BY SECTOR_NOMBRE, PLIEGO, PLIEGO_NOMBRE, EJECUTORA, EJECUTORA_NOMBRE
+    GROUP BY SECTOR_NOMBRE, ANO_EJE, PLIEGO, PLIEGO_NOMBRE, EJECUTORA, EJECUTORA_NOMBRE
 
     UNION ALL
 
@@ -309,20 +351,94 @@ resultado_ecofin = con.execute(f"""
              PROGRAMA_PPTO_D, SEC_FUNC, CLASIFICADOR, ANO_EJE, MES_EJE, MES, FECHA
 """).df()
 
-resultado_ecofin["FECHA_ACTUALIZACION_ARCHIVO"] = fecha_actualizacion
-resultado_ecofin.to_csv("economia_finanzas_resumen.csv", index=False)
 
-# 4. Dejar constancia de que ESTA version del archivo origen ya se proceso,
-#    para que la proxima corrida sepa si hay algo nuevo o no.
-os.makedirs("output", exist_ok=True)
-with open(MARCADOR, "w") as f:
-    f.write(fecha_actualizacion)
+def procesar_archivo(url):
+    """Devuelve (minem, ecofin) de un archivo anual. Cada archivo se procesa
+    con su propia conexion para liberar memoria antes de leer el siguiente."""
+    con = duckdb.connect()
+    try:
+        cargar_base(con, url)
+        return consultar_minem(con), consultar_ecofin(con)
+    finally:
+        con.close()
 
-avisar_workflow(True)
 
-# Validaciones rápidas
-print("=== MINEM ===")
-print(resultado_minem["NIVEL_DETALLE"].value_counts())
-print("=== ECOFIN ===")
-print(resultado_ecofin["NIVEL_DETALLE"].value_counts())
-print("Fecha de actualización del archivo origen (hora Perú):", fecha_actualizacion)
+def main():
+    hoy = hoy_peru()
+    anios_en_historico = {int(a) for a in leer_json(CONTROL_HISTORICO)}
+    anios = anios_a_leer(hoy, anios_en_historico)
+    procesados = leer_json(MARCADOR_ANIOS)
+    print(f"Fecha Peru: {hoy} | Años a leer: {anios} | En historico: {sorted(anios_en_historico)}")
+
+    # 1. Version disponible de cada año
+    versiones = {}
+    hay_nuevo = False
+    for anio in anios:
+        ultima = procesados.get(str(anio))
+        ultima_dt = datetime.strptime(ultima, FMT).replace(tzinfo=PERU) if ultima else None
+        no_publicado, fecha_gmt = leer_last_modified(URL_PLANTILLA.format(anio=anio), ultima_dt)
+
+        if no_publicado and hoy.month == 1 and anio == hoy.year:
+            print(f"{anio}: el MEF aun no lo publica. Se continua sin ese año.")
+            continue
+        if fecha_gmt is None:
+            print(f"{anio}: no se pudo leer Last-Modified. No se reprocesa.")
+            avisar_workflow(False)
+            sys.exit(0)
+
+        fecha_peru = fecha_gmt.astimezone(PERU)
+        print(f"{anio}: Last-Modified {fecha_peru.strftime(FMT)} | procesado {ultima or '(ninguno)'}")
+        # Si el servidor devuelve una version anterior (cache desfasada), no se
+        # considera nueva ni se retrocede el marcador.
+        if ultima_dt is None or fecha_peru > ultima_dt:
+            hay_nuevo = True
+            versiones[anio] = fecha_peru.strftime(FMT)
+        else:
+            versiones[anio] = ultima
+
+    cambio_anios = {str(a) for a in versiones} != set(procesados)
+    if not hay_nuevo and not cambio_anios:
+        print("Sin datos nuevos ni cambio de años. No se reprocesa.")
+        avisar_workflow(False)
+        sys.exit(0)
+
+    print(f"Procesando años {sorted(versiones)}...")
+
+    # 2. Un archivo a la vez
+    minem, ecofin = [], []
+    for anio in sorted(versiones):
+        print(f"-> {anio}")
+        res_minem, res_ecofin = procesar_archivo(URL_PLANTILLA.format(anio=anio))
+        minem.append(res_minem)
+        ecofin.append(res_ecofin)
+
+    resultado_minem = pd.concat(minem, ignore_index=True)
+    resultado_ecofin = pd.concat(ecofin, ignore_index=True)
+
+    # La fecha vigente es la del año mas reciente que exista.
+    fecha_actualizacion = versiones[max(versiones)]
+
+    resultado_minem["FECHA_ACTUALIZACION_ARCHIVO"] = fecha_actualizacion
+    resultado_minem.to_csv("energia_minas_resumen.csv", index=False)
+    resultado_ecofin["FECHA_ACTUALIZACION_ARCHIVO"] = fecha_actualizacion
+    resultado_ecofin.to_csv("economia_finanzas_resumen.csv", index=False)
+
+    # 3. Dejar constancia de lo procesado para la proxima corrida.
+    os.makedirs("output", exist_ok=True)
+    with open(MARCADOR, "w") as f:
+        f.write(fecha_actualizacion)
+    with open(MARCADOR_ANIOS, "w") as f:
+        json.dump({str(a): versiones[a] for a in sorted(versiones)}, f, indent=2)
+
+    avisar_workflow(True)
+
+    # Validaciones rapidas
+    print("=== MINEM ===")
+    print(resultado_minem.groupby(["NIVEL_DETALLE", "ANO_EJE"]).size())
+    print("=== ECOFIN ===")
+    print(resultado_ecofin.groupby(["NIVEL_DETALLE", "ANO_EJE"]).size())
+    print("Fecha de actualizacion del archivo origen (hora Peru):", fecha_actualizacion)
+
+
+if __name__ == "__main__":
+    main()
