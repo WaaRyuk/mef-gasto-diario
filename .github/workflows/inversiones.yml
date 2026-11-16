@@ -1,0 +1,36 @@
+name: Inversiones MINEM (Datos Abiertos)
+permissions:
+  contents: write
+on:
+  schedule:
+    # En UTC; Peru es UTC-5. El MEF actualiza estos archivos entre 12:30 y 14:00
+    # hora Peru. 15:23 y 08:23 (respaldo del dia siguiente).
+    - cron: '23 20 * * *'
+    - cron: '23 13 * * *'
+  workflow_dispatch:
+jobs:
+  extraer-inversiones:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      - name: Extraer inversiones
+        # Solo reprocesa los archivos cuyo Last-Modified cambio (o si cambio la
+        # lista de CUIs). Si no hay nada nuevo deja PROCESADO=false.
+        run: python scripts/extraer_inversiones_datos_abiertos.py
+      - name: Guardar resultados en el repo
+        if: env.PROCESADO == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add output/inv_*.csv output/inv_control.json
+          git commit -m "Actualiza inversiones MINEM (Datos Abiertos)" || echo "Sin cambios"
+          git pull --rebase origin main
+          git push
