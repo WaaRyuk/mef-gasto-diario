@@ -15,12 +15,11 @@ Cadena funcional programatica del convenio (lado GORE):
 Filtro base: NIVEL_GOBIERNO = 'R' y FINALIDAD = 0044672 (todas las GORE).
 El resto de la cadena NO se usa como filtro duro: se marca en CADENA_COMPLETA
 (1 = coincide en todo) para detectar GORE que registraron la finalidad con otra
-actividad o funcion. La finalidad es generica (la usan otros sectores), por eso
-se agregan dos marcas para separar lo de MINEM:
-    ES_DYT          1 si el rubro es 13 (Donaciones y Transferencias), que es
-                    como la GORE incorpora una transferencia financiera.
-    POSIBLE_MINEM   1 si el nombre de la meta o de la ejecutora menciona
-                    energia, minas o DREM. Se valida con el area usuaria.
+actividad o funcion. ES_DYT = 1 marca el rubro 13 (Donaciones y Transferencias), que es como la
+GORE incorpora la transferencia financiera de MINEM (S/ 200 000 por GORE al
+año, 25 GORE = S/ 5 M, que cuadra con el devengado de MINEM en 2.4.1.3.1.2,
+actividad 5001254). El PIM puede ser mayor por saldos de balance de años
+anteriores. Nota: META_NOMBRE trae el nombre de la finalidad, no un texto propio.
 
 Salida: output/transferencias_gore.csv, mismo esquema que energia_minas_resumen
 (fila MES_EJE = 0 "Sin mes" con PIA/PIM y filas mensuales con la ejecucion).
@@ -59,7 +58,6 @@ CADENA = {
     "DIVISION_FUNCIONAL": "4",
     "GRUPO_FUNCIONAL": "5",
 }
-PATRON_MINEM = r"\bMINA|\bMINER|ENERG|\bDREM|\bDIREM|HIDROCARB"
 
 COLUMNAS_TEXTO = [
     "NIVEL_GOBIERNO", "PLIEGO", "PLIEGO_NOMBRE", "SEC_EJEC", "EJECUTORA", "EJECUTORA_NOMBRE",
@@ -178,9 +176,6 @@ def consultar_anio(con, anio):
                       ESPECIFICA, ESPECIFICA_DET, ESPECIFICA_DET_NOMBRE) AS CLASIFICADOR,
             CASE WHEN {cadena_sql} THEN 1 ELSE 0 END                  AS CADENA_COMPLETA,
             CASE WHEN {sin_ceros('RUBRO')} = '13' THEN 1 ELSE 0 END   AS ES_DYT,
-            CASE WHEN regexp_matches(UPPER(COALESCE(META_NOMBRE, '') || ' ' ||
-                                           COALESCE(EJECUTORA_NOMBRE, '')), '{PATRON_MINEM}')
-                 THEN 1 ELSE 0 END                                     AS POSIBLE_MINEM,
             COALESCE(MES_EJE, 0)                                      AS MES_EJE,
             CASE COALESCE(MES_EJE, 0)
                 WHEN 1 THEN 'Ene' WHEN 2 THEN 'Feb' WHEN 3 THEN 'Mar' WHEN 4 THEN 'Abr'
@@ -205,8 +200,7 @@ def consultar_anio(con, anio):
     print(f"   {len(df)} filas | {df['GORE'].nunique()} GORE | "
           f"PIM {df['pim'].sum():,.2f} | devengado {df['devengado'].sum():,.2f}")
     print(f"   cadena completa: {df.loc[df.CADENA_COMPLETA == 1, 'pim'].sum():,.2f} PIM | "
-          f"rubro 13: {df.loc[df.ES_DYT == 1, 'pim'].sum():,.2f} PIM | "
-          f"posible MINEM: {df.loc[df.POSIBLE_MINEM == 1, 'pim'].sum():,.2f} PIM")
+          f"rubro 13: {df.loc[df.ES_DYT == 1, 'pim'].sum():,.2f} PIM")
     print(resumen.to_string(float_format=lambda x: f"{x:,.2f}"))
     return df
 
