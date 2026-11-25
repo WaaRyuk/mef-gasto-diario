@@ -1,0 +1,48 @@
+name: Transferencias MINEM a GORE (5.2.3)
+
+permissions:
+  contents: write
+
+on:
+  schedule:
+    # Diario, despues del resumen MEF. 21:37 UTC = 16:37 hora Peru. Solo año en curso.
+    - cron: '37 21 * * *'
+  workflow_dispatch:
+    inputs:
+      anios:
+        description: 'Años a procesar (ej. 2020-2026 o 2025,2026). Vacio = año en curso.'
+        required: false
+        default: ''
+
+concurrency:
+  group: transferencias-gore
+  cancel-in-progress: false
+
+jobs:
+  extraer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      - name: Extraer ejecucion GORE (finalidad 0044672)
+        env:
+          ANIOS_GORE: ${{ github.event.inputs.anios }}
+        run: python scripts/extraer_transferencias_gore.py
+      - name: Guardar en el repo
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -f output/transferencias_gore.csv ]; then
+            git add output/transferencias_gore.csv
+            git commit -m "Actualiza transferencias GORE" || echo "Sin cambios"
+            git pull --rebase origin main
+            git push
+          fi
