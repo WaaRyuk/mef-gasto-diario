@@ -29,6 +29,8 @@ Uso:
     python scripts/extraer_transferencias_gore.py --anios 2020-2026
     python scripts/extraer_transferencias_gore.py --anios 2024,2025
 Cada corrida reemplaza en el CSV solo los años procesados y conserva el resto.
+Sin --anios, si la fecha del archivo del MEF es la misma que ya tiene el CSV, no
+descarga nada (la corrida se dispara cada vez que termina el Resumen diario MEF).
 """
 import argparse
 import os
@@ -205,24 +207,46 @@ def consultar_anio(con, anio):
     return df
 
 
+def fechas_guardadas():
+    """Fecha del archivo MEF con la que se proceso cada año en el CSV actual."""
+    if not os.path.exists(SALIDA):
+        return {}
+    previo = pd.read_csv(SALIDA, dtype=str, keep_default_na=False,
+                         usecols=["ANO_EJE", "FECHA_ACTUALIZACION_ARCHIVO"])
+    return {int(a): set(g["FECHA_ACTUALIZACION_ARCHIVO"]) for a, g in previo.groupby("ANO_EJE")}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--anios", default=os.environ.get("ANIOS_GORE", ""),
                     help="Ej.: 2020-2026 o 2024,2025. Vacio = año en curso.")
-    anios = parsear_anios(ap.parse_args().anios)
+    texto_anios = ap.parse_args().anios
+    anios = parsear_anios(texto_anios)
     print(f"Años a procesar: {anios}")
+
+    # Corrida automatica (sin --anios): si el MEF no publico un archivo nuevo,
+    # no se descarga nada. Con --anios se reprocesa siempre.
+    guardadas = fechas_guardadas() if not texto_anios.strip() else {}
 
     con = duckdb.connect()
     resultados, errores = [], []
     for anio in anios:
         try:
+            if anio in guardadas:
+                _, fecha = resolver_url(anio)
+                if guardadas[anio] == {fecha}:
+                    print(f"-> {anio}: el archivo del MEF sigue siendo el de {fecha}; sin cambios.")
+                    continue
             resultados.append(consultar_anio(con, anio))
         except Exception as e:  # sigue con los demas años
             print(f"   ERROR {anio}: {e}")
             errores.append(anio)
 
     if not resultados:
-        sys.exit("No se proceso ningun año.")
+        if errores:
+            sys.exit(f"Años con error: {errores}")
+        print("Nada que actualizar.")
+        return
     nuevo = pd.concat(resultados, ignore_index=True)
     procesados = sorted(int(a) for a in nuevo["ANO_EJE"].dropna().unique())
 

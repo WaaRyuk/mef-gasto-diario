@@ -4,9 +4,11 @@ permissions:
   contents: write
 
 on:
-  schedule:
-    # Diario, despues del resumen MEF. 21:37 UTC = 16:37 hora Peru. Solo año en curso.
-    - cron: '37 21 * * *'
+  # Corre cada vez que termina el Resumen diario MEF (que dispara cron-job.org).
+  # El script no descarga nada si el MEF no publico un archivo nuevo.
+  workflow_run:
+    workflows: ["Resumen diario MEF"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       anios:
